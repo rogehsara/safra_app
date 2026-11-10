@@ -22,9 +22,12 @@ class DatabaseSeeder extends Seeder
             SupplySeeder::class,
             UsageIngredientSeeder::class,
             RolesPermissionsSeeder::class,
+            WaiterSeeder::class,
+            ChefSeeder::class,
+            LargeDatasetSeeder::class,
             ChefSeeder::class,
             AdminSeeder::class,
-            WaiterSeeder::class,
+           
             OfferSeeder::class,
             OrderSeeder::class,
             OrderItemSeeder::class,

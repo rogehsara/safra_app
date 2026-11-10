@@ -1,0 +1,87 @@
+syntax = "proto3";
+
+package inventory;
+
+option java_package = "com.inventory_service.inventory.grpc";
+option java_multiple_files = true;
+
+service InventoryService {
+
+    rpc GetAvailableQuantity(
+        GetAvailableQuantityRequest
+    ) returns (
+        GetAvailableQuantityResponse
+    );
+
+    rpc AddStock(
+        AddStockRequest
+    ) returns (
+        AddStockResponse
+    );
+
+    rpc ReserveStock(
+        ReserveStockRequest
+    ) returns (
+        ReserveStockResponse
+    );
+
+    rpc ReleaseReservation(
+        ReleaseReservationRequest
+    ) returns (
+        ReleaseReservationResponse
+    );
+}
+
+// Get Available Quantity
+
+message GetAvailableQuantityRequest {
+    int64 product_id = 1;
+}
+
+message GetAvailableQuantityResponse {
+    int64 product_id = 1;
+    int32 total_quantity = 2;
+    int32 reserved_quantity = 3;
+    int32 available_quantity = 4;
+}
+
+// Add Stock
+
+message AddStockRequest {
+    int64 product_id = 1;
+    int32 quantity = 2;
+}
+
+message AddStockResponse {
+    bool success = 1;
+    string message = 2;
+}
+
+// Reserve Stock
+
+message StockItem {
+    int64 product_id = 1;
+    int32 quantity = 2;
+}
+
+message ReserveStockRequest {
+    string reservation_id = 1;
+    repeated StockItem items = 2;
+}
+
+message ReserveStockResponse {
+    bool success = 1;
+    string message = 2;
+    string reservation_id = 3;
+}
+
+// Release Reservation
+
+message ReleaseReservationRequest {
+    string reservation_id = 1;
+}
+
+message ReleaseReservationResponse {
+    bool success = 1;
+    string message = 2;
+}

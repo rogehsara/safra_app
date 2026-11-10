@@ -30,5 +30,17 @@ return [
             'channel' => env('SLACK_BOT_USER_DEFAULT_CHANNEL'),
         ],
     ],
+    'inventory' => [
+    'grpc_host' => env(
+        'INVENTORY_GRPC_HOST',
+        'inventory-service:9090'
+    ),
+
+    'timeout_ms' => env(
+        'INVENTORY_GRPC_TIMEOUT',
+        2000
+    ),
+],
+
 
 ];

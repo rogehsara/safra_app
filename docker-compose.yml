@@ -1,0 +1,52 @@
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: safra_laravel
+    ports:
+      - "8200:8000"
+    volumes:
+      - .:/var/www/html
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DB_CONNECTION: mysql
+      DB_HOST: db
+      DB_PORT: 3306
+      DB_DATABASE: parallel_full
+      DB_USERNAME: root
+      DB_PASSWORD: secret
+      INVENTORY_GRPC_HOST: inventory-service:9090
+    networks:
+      - inventory-network
+
+  db:
+    image: mariadb:10.4
+    container_name: safra_database
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: secret
+      MYSQL_DATABASE: parallel_full
+    ports:
+      - "3307:3306"
+    volumes:
+      - safra_db_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      inventory-network:
+        aliases:
+          - db
+
+volumes:
+  safra_db_data:
+
+networks:
+  inventory-network:
+    external: true

@@ -69,7 +69,9 @@ Route::prefix('v1')->group(function () {
 
             Route::post('/products', [ProductController::class, 'store']);
             Route::patch('/products/{product}', [ProductController::class, 'update']);
-
+            Route::post(  '/products/{product}/inventory/add',[ProductController::class, 'addInventoryStock']
+            
+);
             Route::delete('/products/{product}', [ProductController::class, 'destroy']);
 
         });
@@ -80,7 +82,7 @@ Route::prefix('v1')->group(function () {
         |--------------------------------------------------------------------------
         */
 
-        Route::get('/orders', [OrderController::class, 'index']);
+        Route::get('/orders', [OrderController::class, 'index']); //
 
         Route::get('/orders/{order}', [OrderController::class, 'show']);
 
@@ -159,3 +161,9 @@ Route::prefix('parallel')->middleware(['aop.monitor', 'monitor'])->group(functio
     Route::get('/benchmark/run', [ParallelRequirementsController::class, 'runBenchmark'])->name('parallel.benchmark.run');
 });
 
+Route::get('/debug-db-host', function () {
+    return response()->json([
+        'host' => (new \App\Models\User)->getConnection()->getConfig('host'),
+        'database' => (new \App\Models\User)->getConnection()->getDatabaseName(),
+    ]);
+});

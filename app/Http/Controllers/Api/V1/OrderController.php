@@ -8,6 +8,10 @@ use App\Models\MenuItem;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
+use App\Services\InventoryGrpcClient;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
+use Throwable;
 
 class OrderController extends Controller
 {
@@ -15,12 +19,17 @@ class OrderController extends Controller
 {
     $user = auth('jwt')->user();
 
-    if ($user->hasRole('admin', 'web')) {
+    if (! $user) {
+        return response()->json([
+            'success' => false,
+            'message' => 'Unauthenticated',
+        ], 401);
+    }
 
+    if ($user->role === 'admin') {
         $query = DeliveryOrder::query();
 
-    } elseif ($user->hasRole('customer', 'web')) {
-
+    } elseif ($user->role === 'customer') {
         $customer = $user->customer;
 
         if (! $customer) {
@@ -36,12 +45,10 @@ class OrderController extends Controller
         );
 
     } else {
-
         return response()->json([
             'success' => false,
             'message' => 'You are not allowed to view delivery orders',
         ], 403);
-
     }
 
     if ($request->filled('status')) {
@@ -96,74 +103,174 @@ class OrderController extends Controller
     ], 200);
 }
 
-    public function store(Request $request)
-    {
-        $request->validate([
-            'delivery_address' => ['required', 'string', 'max:1000'],
+   
+public function store(
+    Request $request,
+    InventoryGrpcClient $inventory
+) {
+    $validated = $request->validate([
+        'delivery_address' => [
+            'required',
+            'string',
+            'max:1000'
+        ],
 
-            'items' => ['required', 'array', 'min:1'],
+        'items' => ['required', 'array', 'min:1'],
 
-            'items.*.menu_item_id' => [
-                'required',
-                'integer',
-                'distinct',
-                'exists:menu_items,id',
-            ],
+        'items.*.menu_item_id' => [
+            'required',
+            'integer',
+            'distinct',
+            'exists:menu_items,id',
+        ],
 
-            'items.*.quantity' => [
-                'required',
-                'integer',
-                'min:1',
-                'max:100',
-            ],
+        'items.*.quantity' => [
 
-            'items.*.notes' => [
-                'nullable',
-                'string',
-                'max:255',
-            ],
+            'integer',
+            'min:1',
+        ],
+
+        'items.*.notes' => [
+            'nullable',
+            'string',
+            'max:255',
+        ],
+    ]);
+
+    $user = auth('jwt')->user();
+
+    $customer = $user?->customer;
+
+    if (
+        ! $user ||
+        $user->role !== 'customer' ||
+        ! $customer
+    ) {
+        return response()->json([
+            'success' => false,
+            'message' => 'Only customers can create delivery orders',
+        ], 403);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | 1. Validate local products and calculate total
+    |--------------------------------------------------------------------------
+    */
+
+    $items = collect($validated['items']);
+
+    $productIds = $items
+        ->pluck('menu_item_id')
+        ->map(fn ($id) => (int) $id)
+        ->all();
+
+    $products = MenuItem::query()
+        ->whereIn('id', $productIds)
+        ->where('is_available', true)
+        ->get()
+        ->keyBy('id');
+
+    if ($products->count() !== count($productIds)) {
+        return response()->json([
+            'success' => false,
+            'message' => 'One or more products are unavailable',
+        ], 422);
+    }
+
+    $total = 0;
+
+    foreach ($items as $item) {
+        $product = $products->get(
+            $item['menu_item_id']
+        );
+
+        $total += $product->price * $item['quantity'];
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | 2. Prepare one inventory reservation request
+    |--------------------------------------------------------------------------
+    */
+
+    $reservationId = (string) Str::uuid();
+
+    $reservationItems = $items->map(function ($item) {
+        return [
+            'product_id' => (int) $item['menu_item_id'],
+            'quantity' => (int) $item['quantity'],
+        ];
+    })->all();
+
+    /*
+    |--------------------------------------------------------------------------
+    | 3. Reserve stock through gRPC
+    |--------------------------------------------------------------------------
+    */
+
+    try {
+        $reservation = $inventory->reserveStock(
+            $reservationId,
+            $reservationItems
+        );
+        
+    } catch (Throwable $e) {
+
+        Log::error('Inventory reservation failed', [
+            'reservation_id' => $reservationId,
+            'error' => $e->getMessage(),
         ]);
 
-        $user = auth('jwt')->user();
-        $customer = $user->customer;
+        return response()->json([
+            'success' => false,
+            'message' => $e->getMessage(),
+            'code' => 'INVENTORY_SERVICE_UNAVAILABLE',
+        ], 503);
+    }
 
-        if ($user->role !== 'customer' || ! $customer) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Only customers can create delivery orders',
-            ], 403);
-        }
 
-        $order = DB::transaction(function () use ($request, $customer) {
-            $items = collect($request->input('items'));
+    /*
+    |--------------------------------------------------------------------------
+    | 4. Reject if stock is insufficient
+    |--------------------------------------------------------------------------
+    */
 
-            $productIds = $items->pluck('menu_item_id')->all();
+    if (! $reservation['success']) {
+        return response()->json([
+            'success' => false,
+            'message' => $reservation['message'],
+            'code' => 'INSUFFICIENT_STOCK',
+        ], 409);
+    }
 
-            $products = MenuItem::query()
-                ->whereIn('id', $productIds)
-                ->where('is_available', true)
-                ->get()
-                ->keyBy('id');
+    /*
+    |--------------------------------------------------------------------------
+    | 5. Create order inside MySQL transaction
+    |--------------------------------------------------------------------------
+    */
 
-            if ($products->count() !== count($productIds)) {
-                abort(422, 'One or more products are unavailable');
-            }
+    try {
 
-            $total = 0;
+        $order = DB::transaction(function () use (
+            $validated,
+            $customer,
+            $items,
+            $total
+        ) {
 
-            foreach ($items as $item) {
-                $product = $products->get($item['menu_item_id']);
-
-                $total += $product->price * $item['quantity'];
-            }
+        // TEST ONLY: Force database transaction failure
+    //throw new RuntimeException('TEST_RELEASE_RESERVATION');
 
             $order = DeliveryOrder::create([
                 'customer_id' => $customer->id,
                 'status' => 'pending',
                 'total_price' => $total,
-                'delivery_address' => $request->delivery_address,
+                'delivery_address' => $validated['delivery_address'],
             ]);
+
             foreach ($items as $item) {
+
                 $order->orderItems()->create([
                     'menu_item_id' => $item['menu_item_id'],
                     'quantity' => $item['quantity'],
@@ -176,12 +283,61 @@ class OrderController extends Controller
             return $order;
         });
 
+    } catch (Throwable $e) {
+
+        /*
+        |--------------------------------------------------------------------------
+        | 6. Compensating action: release reserved stock
+        |--------------------------------------------------------------------------
+        */
+
+        try {
+
+            $released = $inventory->releaseReservation(
+                $reservationId
+            );
+
+            if (! $released) {
+                Log::critical('Inventory reservation release was rejected', [
+                    'reservation_id' => $reservationId,
+                ]);
+            }
+
+        } catch (Throwable $releaseException) {
+
+            Log::critical('Inventory compensation failed', [
+                'reservation_id' => $reservationId,
+                'error' => $releaseException->getMessage(),
+            ]);
+        }
+
+        Log::error('Order creation failed after stock reservation', [
+            'reservation_id' => $reservationId,
+            'error' => $e->getMessage(),
+        ]);
+
         return response()->json([
-            'success' => true,
-            'message' => 'Order created successfully',
-            'data' => $order->load('orderItems.menuItem'),
-        ], 201);
+            'success' => false,
+            'message' => 'Order creation failed. Inventory release was attempted.',
+            'code' => 'ORDER_CREATION_FAILED',
+            'reservation_id' => $reservationId,
+        ], 500);
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | 7. Success
+    |--------------------------------------------------------------------------
+    */
+
+    return response()->json([
+        'success' => true,
+        'message' => 'Order created and inventory reserved successfully',
+        'data' => $order->load('orderItems.menuItem'),
+        'reservation_id' => $reservationId,
+    ], 201);
+}
+
 
     public function updateStatus(Request $request, DeliveryOrder $order)
     {
